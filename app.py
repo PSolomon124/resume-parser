@@ -1,64 +1,88 @@
 import os
-import json
 import streamlit as st
-from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain.prompts import PromptTemplate
 
-# Load environment variables
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
+# -----------------------------
+# Streamlit App Config
+# -----------------------------
+st.set_page_config(page_title="AI Resume Parser", page_icon="📄", layout="centered")
 
-# Initialize Gemini model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=api_key)
+st.title("📄 AI Resume Parser")
+st.write("Upload your resume and extract structured details like **Name, Email, Skills, Education, Experience, Technologies**.")
 
-# Prompt for parsing resume
-template = """
-You are a professional resume parser.
-Extract the following details in JSON format:
-- Name
-- Email
-- Phone
-- Skills
-- Education
-- Experience
+# -----------------------------
+# Load Google Gemini API Key
+# -----------------------------
+if "GOOGLE_API_KEY" not in st.secrets:
+    st.error("❌ GOOGLE_API_KEY not found. Please add it in Streamlit Secrets.")
+    st.stop()
 
-Resume Content:
-{resume_text}
-"""
+# Initialize Google Generative AI (Gemini)
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",   # ✅ Fixed model name
+    google_api_key=st.secrets["GOOGLE_API_KEY"],
+    temperature=0.2
+)
 
-prompt = PromptTemplate(input_variables=["resume_text"], template=template)
-chain = LLMChain(llm=llm, prompt=prompt)
-
-# Streamlit UI
-st.title("📄 Resume Parser with Gemini")
-
+# -----------------------------
+# File Upload
+# -----------------------------
 uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
 
 if uploaded_file is not None:
-    # Load resume content
-    if uploaded_file.type == "application/pdf":
-        loader = PyPDFLoader(uploaded_file)
-        pages = loader.load()
-        resume_text = " ".join([p.page_content for p in pages])
-    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        loader = Docx2txtLoader(uploaded_file)
-        resume_text = loader.load()[0].page_content
-    else:
-        loader = TextLoader(uploaded_file)
-        resume_text = loader.load()[0].page_content
+    file_type = uploaded_file.name.split(".")[-1].lower()
 
-    st.write("✅ Resume uploaded successfully")
+    # Save temp file for processing
+    temp_file_path = f"temp.{file_type}"
+    with open(temp_file_path, "wb") as f:
+        f.write(uploaded_file.getvalue())
 
-    if st.button("Parse Resume"):
-        with st.spinner("Extracting details... ⏳"):
-            response = chain.run(resume_text=resume_text)
+    # Extract text depending on file type
+    if file_type == "pdf":
+        loader = PyPDFLoader(temp_file_path)
+        documents = loader.load()
+        resume_text = " ".join([doc.page_content for doc in documents])
+    elif file_type == "docx":
+        loader = Docx2txtLoader(temp_file_path)
+        documents = loader.load()
+        resume_text = " ".join([doc.page_content for doc in documents])
+    else:  # txt
+        loader = TextLoader(temp_file_path)
+        documents = loader.load()
+        resume_text = " ".join([doc.page_content for doc in documents])
 
-            try:
-                parsed_json = json.loads(response)
-                st.json(parsed_json)   # Pretty JSON output
-            except:
-                st.write("⚠️ Could not parse JSON, showing raw response:")
-                st.write(response)
+    st.subheader("📑 Extracted Raw Resume Text")
+    st.write(resume_text[:1000] + "...")  # show only first 1000 chars
+
+    # -----------------------------
+    # LLM Prompt for Resume Parsing
+    # -----------------------------
+    prompt_template = """
+    You are an expert Resume Parser. Extract the following structured details from the resume text:
+
+    Resume Text:
+    {resume_text}
+
+    Provide output strictly in JSON format with these fields:
+    {{
+      "name": "",
+      "email": "",
+      "phone": "",
+      "skills": [],
+      "technologies": [],
+      "education": [],
+      "experience": []
+    }}
+    """
+
+    prompt = PromptTemplate(template=prompt_template, input_variables=["resume_text"])
+
+    # Run parsing
+    with st.spinner("🔍 Parsing resume with AI..."):
+        response = llm.invoke(prompt.format(resume_text=resume_text))
+
+    # Display result
+    st.subheader("✅ Parsed Resume Data")
+    st.json(response.content)
