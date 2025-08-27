@@ -1,101 +1,64 @@
-# installatoin
-# pip install langchain_openai langchain-google-genai python-dotenv streamlit
-# pip install -U langchain-community
-
 import os
+import json
+import streamlit as st
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-import streamlit as st
-import json
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 
-# -----------------------
-# Step 2: Config / LLM
-# -----------------------
+# Load environment variables
 load_dotenv()
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+api_key = os.getenv("GOOGLE_API_KEY")
 
-PROMPT_TEMPLATE = """
-You are an expert resume parser. Given the resume text, extract the following fields and return a single valid JSON object:
+# Initialize Gemini model
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=api_key)
 
-{{
-  "Name": "...",
-  "Email": "...",
-  "Phone": "...",
-  "LinkedIn": "...",
-  "Skills": [...],
-  "Education": [...],
-  "Experience": [...],
-  "Projects": [...],
-  "Certifications": [...],
-  "Languages": [...]
-}}
+# Prompt for parsing resume
+template = """
+You are a professional resume parser.
+Extract the following details in JSON format:
+- Name
+- Email
+- Phone
+- Skills
+- Education
+- Experience
 
-Rules:
-- If a field cannot be found, set its value to "No idea".
-- Return ONLY valid JSON (no extra commentary).
-- Keep lists as arrays, and keep Experience/Projects as arrays of short strings.
-
-Resume text:
-{text}
+Resume Content:
+{resume_text}
 """
 
+prompt = PromptTemplate(input_variables=["resume_text"], template=template)
+chain = LLMChain(llm=llm, prompt=prompt)
 
-prompt = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["text"])
+# Streamlit UI
+st.title("📄 Resume Parser with Gemini")
 
-# -----------------------
-# Step 3: Helpers
-# -----------------------
-def load_resume_docs(uploaded_file):
-    temp_path = f"temp_{uploaded_file.name}"
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
 
-    if uploaded_file.name.endswith(".pdf"):
-        loader = PyPDFLoader(temp_path)
-    elif uploaded_file.name.endswith(".docx"):
-        loader = Docx2txtLoader(temp_path)
-    elif uploaded_file.name.endswith(".txt"):
-        loader = TextLoader(temp_path)
+if uploaded_file is not None:
+    # Load resume content
+    if uploaded_file.type == "application/pdf":
+        loader = PyPDFLoader(uploaded_file)
+        pages = loader.load()
+        resume_text = " ".join([p.page_content for p in pages])
+    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        loader = Docx2txtLoader(uploaded_file)
+        resume_text = loader.load()[0].page_content
     else:
-        return None
-    return loader.load()
+        loader = TextLoader(uploaded_file)
+        resume_text = loader.load()[0].page_content
 
-# -----------------------
-# Step 4: Streamlit UI
-# -----------------------
-def main():
-    st.set_page_config(page_title="Resume Parser", page_icon="📄", layout="centered")
-    st.title("📄 Resume Parser — LangChain")
+    st.write("✅ Resume uploaded successfully")
 
-    uploaded_file = st.file_uploader("Upload resume", type=["pdf", "docx", "txt"])
+    if st.button("Parse Resume"):
+        with st.spinner("Extracting details... ⏳"):
+            response = chain.run(resume_text=resume_text)
 
-    if uploaded_file:
-        with st.spinner("Loading resume..."):
-            docs = load_resume_docs(uploaded_file)
-            if not docs:
-                st.error("Unsupported file type.")
-                return
-
-        st.subheader("Extracted Text (Preview)")
-        preview_text = "\n\n".join([d.page_content for d in docs])[:4000]
-        st.text_area("Preview", value=preview_text, height=200)
-
-        if st.button("Ask LLM"):
-            with st.spinner("Sending to LLM..."):
-                full_text = "\n\n".join([d.page_content for d in docs])
-                formatted_prompt = prompt.format(text=full_text)
-
-                response = llm.invoke(formatted_prompt)
-                try:
-                    parsed_json = json.loads(response.content)
-                    st.json(parsed_json)
-                except json.JSONDecodeError:
-                    st.write(response.content)  
-
-if __name__ == "__main__":
-    main()
+            try:
+                parsed_json = json.loads(response)
+                st.json(parsed_json)   # Pretty JSON output
+            except:
+                st.write("⚠️ Could not parse JSON, showing raw response:")
+                st.write(response)
