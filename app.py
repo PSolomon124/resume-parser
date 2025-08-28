@@ -1,95 +1,123 @@
-# app.py
-import streamlit as st
+# installation
+# pip install langchain_openai langchain-google-genai python-dotenv streamlit
+# pip install -U langchain-community
+
 import os
-import tempfile
 import json
+import streamlit as st
 from dotenv import load_dotenv
-
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain.prompts import PromptTemplate
 
-# Load environment variables
-load_dotenv()
-
-# Use Streamlit secrets for API key
+# -----------------------
+# Step 1: Load API Key
+# -----------------------
+# First try Streamlit secrets, fallback to .env for local dev
 if "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-elif os.getenv("GOOGLE_API_KEY") is None:
-    st.error("❌ GOOGLE_API_KEY not found. Please add it to .streamlit/secrets.toml")
+    api_key = st.secrets["GOOGLE_API_KEY"]
+else:
+    load_dotenv()
+    api_key = os.getenv("GOOGLE_API_KEY")
+
+if not api_key:
+    st.error("❌ GOOGLE_API_KEY not found. Please set it in `.streamlit/secrets.toml` (for deploy) or `.env` (for local).")
     st.stop()
 
-# Initialize model
-model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+# -----------------------
+# Step 2: Config / LLM
+# -----------------------
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_key=api_key
+)
 
-# Streamlit UI
-st.set_page_config(page_title="Resume Parser", layout="wide")
-st.title("📄 AI Resume Parser with LangChain + Google Gemini")
+PROMPT_TEMPLATE = """
+You are an expert resume parser. Given the resume text, extract the following fields and return a single valid JSON object:
 
-uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
+{
+  "Name": "...",
+  "Email": "...",
+  "Phone": "...",
+  "LinkedIn": "...",
+  "Skills": [...],
+  "Education": [...],
+  "Experience": [...],
+  "Projects": [...],
+  "Certifications": [...],
+  "Languages": [...]
+}
 
-if uploaded_file:
-    file_type = uploaded_file.name.split(".")[-1].lower()
-    text = ""
+Rules:
+- If a field cannot be found, set its value to "No idea".
+- Return ONLY valid JSON (no extra commentary).
+- Keep lists as arrays, and keep Experience/Projects as arrays of short strings.
 
-    try:
-        if file_type == "pdf":
-            # Save PDF temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                tmp_path = tmp_file.name
+Resume text:
+{text}
+"""
 
-            loader = PyPDFLoader(tmp_path)
-            docs = loader.load()
-            text = "\n".join([doc.page_content for doc in docs])
+prompt = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["text"])
 
-        elif file_type == "docx":
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                tmp_path = tmp_file.name
+# -----------------------
+# Step 3: Helpers
+# -----------------------
+def load_resume_docs(uploaded_file):
+    temp_path = f"temp_{uploaded_file.name}"
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-            loader = Docx2txtLoader(tmp_path)
-            docs = loader.load()
-            text = "\n".join([doc.page_content for doc in docs])
+    if uploaded_file.name.endswith(".pdf"):
+        loader = PyPDFLoader(temp_path)
+    elif uploaded_file.name.endswith(".docx"):
+        loader = Docx2txtLoader(temp_path)
+    elif uploaded_file.name.endswith(".txt"):
+        loader = TextLoader(temp_path)
+    else:
+        return None
+    return loader.load()
 
-        elif file_type == "txt":
-            stringio = uploaded_file.getvalue().decode("utf-8")
-            text = stringio
+# -----------------------
+# Step 4: Streamlit UI
+# -----------------------
+def main():
+    st.set_page_config(page_title="Resume Parser", page_icon="📄", layout="centered")
+    st.title("📄 Resume Parser — LangChain + Gemini")
 
-    except Exception as e:
-        st.error(f"❌ Error reading file: {e}")
-        st.stop()
+    uploaded_file = st.file_uploader("Upload resume", type=["pdf", "docx", "txt"])
 
-    # Show extracted text
-    st.subheader("📑 Extracted Text")
-    st.text_area("Resume Content", text, height=250)
+    if uploaded_file:
+        with st.spinner("📥 Loading resume..."):
+            docs = load_resume_docs(uploaded_file)
+            if not docs:
+                st.error("❌ Unsupported file type.")
+                return
 
-    # Parse Resume Button
-    if st.button("🔍 Parse Resume"):
-        with st.spinner("Parsing resume with AI..."):
-            prompt = PromptTemplate(
-                input_variables=["resume"],
-                template="""
-                Extract the following information from the resume text below:
-                - Full Name
-                - Email Address
-                - Phone Number
-                - Skills
-                - Education
-                - Work Experience
+        st.subheader("📝 Extracted Text (Preview)")
+        preview_text = "\n\n".join([d.page_content for d in docs])[:4000]
+        st.text_area("Preview", value=preview_text, height=200)
 
-                Resume:
-                {resume}
-                """
-            )
+        if st.button("🚀 Parse Resume"):
+            with st.spinner("🤖 Extracting structured data..."):
+                full_text = "\n\n".join([d.page_content for d in docs])
+                formatted_prompt = prompt.format(text=full_text)
 
-            final_prompt = prompt.format(resume=text)
-            response = model.invoke(final_prompt)
+                response = llm.invoke(formatted_prompt)
+                try:
+                    parsed_json = json.loads(response.content)
+                    st.success("✅ Resume Parsed Successfully!")
+                    st.json(parsed_json)
 
-            try:
-                parsed_output = json.loads(response.content)
-            except:
-                parsed_output = {"parsed_text": response.content}
+                    # Download button
+                    st.download_button(
+                        label="📥 Download JSON",
+                        data=json.dumps(parsed_json, indent=2),
+                        file_name="resume_parsed.json",
+                        mime="application/json"
+                    )
+                except json.JSONDecodeError:
+                    st.error("⚠️ Failed to parse JSON. Showing raw output instead.")
+                    st.write(response.content)
 
-            st.success("✅ Resume Parsed Successfully")
-            st.json(parsed_output)
+if __name__ == "__main__":
+    main()
