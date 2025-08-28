@@ -8,6 +8,7 @@
 
 import os
 import json
+import re
 import tempfile
 import streamlit as st
 from dotenv import load_dotenv
@@ -106,17 +107,22 @@ def main():
                 response = llm.invoke(formatted_prompt)
 
                 try:
-                    parsed_json = json.loads(response.content)
-                    st.subheader("✅ Parsed Resume Data")
-                    st.json(parsed_json)
+                    # Extract JSON block from AI output
+                    json_match = re.search(r"\{.*\}", response.content, re.DOTALL)
+                    if json_match:
+                        parsed_json = json.loads(json_match.group())
+                        st.subheader("✅ Parsed Resume Data")
+                        st.json(parsed_json)
 
-                    # Download button for JSON
-                    st.download_button(
-                        "📥 Download JSON",
-                        data=json.dumps(parsed_json, indent=2),
-                        file_name="parsed_resume.json",
-                        mime="application/json"
-                    )
+                        # Download button for JSON
+                        st.download_button(
+                            "📥 Download JSON",
+                            data=json.dumps(parsed_json, indent=2),
+                            file_name="parsed_resume.json",
+                            mime="application/json"
+                        )
+                    else:
+                        raise json.JSONDecodeError("No JSON found", response.content, 0)
 
                 except json.JSONDecodeError:
                     st.error("⚠️ Failed to parse JSON. Showing raw output:")
