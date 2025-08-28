@@ -1,42 +1,70 @@
+# app.py
 import streamlit as st
-import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+import tempfile
+import os
 
-st.set_page_config(page_title="Resume Parser", page_icon="📄", layout="centered")
+# Load API key
+GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+
+# Initialize LLM
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+
+# Define a prompt template for parsing resumes
+prompt_template = PromptTemplate(
+    input_variables=["resume_text"],
+    template="""
+You are a professional Resume Parser. Extract the following information from the resume text:
+
+- Full Name
+- Email
+- Phone
+- Education
+- Skills
+- Work Experience
+- Certifications (if any)
+
+Resume Text:
+{resume_text}
+
+Provide the extracted information in a structured JSON format.
+"""
+)
+
+# Build LLM chain
+chain = LLMChain(llm=llm, prompt=prompt_template)
 
 st.title("📄 AI Resume Parser")
-st.write("Upload your resume (PDF, DOCX, or TXT) and I’ll parse the content for you.")
+st.write("Upload a resume (PDF, DOCX, or TXT) and let AI parse it into structured data.")
 
-# Upload file
 uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
 
-if uploaded_file:
-    # Save file temporarily
-    temp_path = os.path.join("temp_" + uploaded_file.name)
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+if uploaded_file is not None:
+    # Save uploaded file to a temp location
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        file_path = tmp_file.name
 
-    # Choose loader based on file type
-    file_ext = uploaded_file.name.split(".")[-1].lower()
-
-    if file_ext == "pdf":
-        loader = PyPDFLoader(temp_path)
-    elif file_ext == "docx":
-        loader = Docx2txtLoader(temp_path)
-    elif file_ext == "txt":
-        loader = TextLoader(temp_path)
+    # Load file depending on type
+    if uploaded_file.name.endswith(".pdf"):
+        loader = PyPDFLoader(file_path)
+    elif uploaded_file.name.endswith(".docx"):
+        loader = Docx2txtLoader(file_path)
     else:
-        st.error("❌ Unsupported file format")
-        os.remove(temp_path)
-        st.stop()
+        loader = TextLoader(file_path)
 
-    # Load document
-    docs = loader.load()
+    documents = loader.load()
+    resume_text = "\n".join([doc.page_content for doc in documents])
 
-    # Show output
-    st.success("✅ Resume loaded successfully!")
-    st.subheader("Extracted Content (Preview)")
-    st.write(docs[0].page_content[:1000])  # Preview first 1000 chars
+    st.subheader("📑 Extracted Text Preview")
+    st.text_area("Resume Text", resume_text[:1500] + "..." if len(resume_text) > 1500 else resume_text, height=250)
 
-    # Clean up (optional)
-    os.remove(temp_path)
+    # Parse with LLM
+    with st.spinner("Parsing resume with AI..."):
+        result = chain.run(resume_text=resume_text)
+
+    st.subheader("✅ Parsed Resume Data")
+    st.json(result)
