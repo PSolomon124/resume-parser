@@ -1,81 +1,72 @@
-# resume_parser_app.py
-
-import os
 import streamlit as st
+import os
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.prompts import Prompt
 import json
 
-# -----------------------
-# Load API Key
-# -----------------------
-# First check Streamlit secrets (works for deployment)
-if "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-else:
-    # Fallback: load from .env (useful for local development)
-    load_dotenv()
-    os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
+# Load environment variables (for local development)
+load_dotenv()
 
-# -----------------------
-# App UI
-# -----------------------
-st.title("📄 Resume Parser with Google Generative AI")
+# Get API key from Streamlit secrets if available, else fallback to .env
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 
-uploaded_file = st.file_uploader("Upload Resume (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
+if not GOOGLE_API_KEY:
+    st.error("❌ Google API key is missing. Please add it to .streamlit/secrets.toml or .env")
+    st.stop()
+
+# Initialize LLM
+llm = ChatGoogleGenerativeAI(model="gemini-pro", google_api_key=GOOGLE_API_KEY)
+
+# Streamlit UI
+st.title("📄 Resume Parser App")
+st.write("Upload a resume and extract structured information using LangChain + Google Generative AI")
+
+uploaded_file = st.file_uploader("Upload your resume", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
-    file_type = uploaded_file.name.split(".")[-1]
+    file_type = uploaded_file.type
+    file_path = f"temp_{uploaded_file.name}"
 
-    # Save file temporarily
-    temp_path = f"temp.{file_type}"
-    with open(temp_path, "wb") as f:
+    with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
-    # Load document
-    if file_type == "pdf":
-        loader = PyPDFLoader(temp_path)
-    elif file_type == "docx":
-        loader = Docx2txtLoader(temp_path)
+    # Load file
+    if file_type == "application/pdf":
+        loader = PyPDFLoader(file_path)
+    elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        loader = Docx2txtLoader(file_path)
     else:
-        loader = TextLoader(temp_path)
+        loader = TextLoader(file_path)
 
-    docs = loader.load()
-    resume_text = " ".join([d.page_content for d in docs])
+    documents = loader.load()
+    text_content = " ".join([doc.page_content for doc in documents])
 
-    # -----------------------
-    # Prompt for structured parsing
-    # -----------------------
-    template = """
-    Extract the following information from the resume text:
+    st.subheader("📌 Extracted Text Preview")
+    st.text_area("Content", text_content[:1000] + "...", height=200)
 
-    - Full Name
+    # Define parsing prompt
+    prompt_template = """
+    Extract the following details from the resume:
+    - Name
     - Email
     - Phone Number
     - Skills
-    - Technical Skills
     - Education
     - Work Experience
-    - Certifications (if any)
 
-    Resume Text:
-    {resume}
-
-    Format output as JSON.
+    Return the output in JSON format.
+    Resume text: {resume}
     """
+    prompt = Prompt(template=prompt_template, input_variables=["resume"])
 
-    prompt = Prompt.from_template(template)
-
-    llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
-
-    response = llm.invoke(prompt.format(resume=resume_text))
+    response = llm.predict(prompt.format(resume=text_content))
 
     try:
-        parsed = json.loads(response.content)
+        parsed_data = json.loads(response)
+        st.subheader("✅ Extracted Resume Information")
+        st.json(parsed_data)
     except:
-        parsed = {"error": "Could not parse into JSON", "raw_response": response.content}
-
-    st.subheader("📌 Extracted Resume Information")
-    st.json(parsed)
+        st.error("⚠️ Failed to parse structured JSON output. Showing raw response instead:")
+        st.write(response)
