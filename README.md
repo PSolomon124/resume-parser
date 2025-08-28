@@ -18,10 +18,13 @@ Do NOT commit .env or .streamlit/secrets.toml.
 Create requirements.txt:
 
 streamlit
-python-dotenv
+langchain
 langchain-openai
 langchain-google-genai
+python-dotenv
 langchain-community
+pypdf
+docx2txt
 
 
 Streamlit Cloud uses this file to install packages automatically.
