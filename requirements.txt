@@ -1,6 +1,9 @@
 streamlit
-python-dotenv
+langchain
+langchain-openai
 langchain-google-genai
+python-dotenv
 langchain-community
 pypdf
 docx2txt
+
