@@ -1,56 +1,42 @@
-import os
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
+import os
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain.prompts import Prompt
 
-# Load API key from Streamlit secrets
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+st.set_page_config(page_title="Resume Parser", page_icon="📄", layout="centered")
 
-# Initialize model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+st.title("📄 AI Resume Parser")
+st.write("Upload your resume (PDF, DOCX, or TXT) and I’ll parse the content for you.")
 
-st.title("📄 Resume Parser with LangChain + Gemini")
-
-uploaded_file = st.file_uploader("Upload your resume", type=["pdf", "docx", "txt"])
+# Upload file
+uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
-    file_type = uploaded_file.name.split(".")[-1].lower()
+    # Save file temporarily
+    temp_path = os.path.join("temp_" + uploaded_file.name)
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-    if file_type == "pdf":
-        loader = PyPDFLoader(uploaded_file)
-    elif file_type == "docx":
-        loader = Docx2txtLoader(uploaded_file)
-    elif file_type == "txt":
-        loader = TextLoader(uploaded_file)
+    # Choose loader based on file type
+    file_ext = uploaded_file.name.split(".")[-1].lower()
+
+    if file_ext == "pdf":
+        loader = PyPDFLoader(temp_path)
+    elif file_ext == "docx":
+        loader = Docx2txtLoader(temp_path)
+    elif file_ext == "txt":
+        loader = TextLoader(temp_path)
     else:
-        st.error("❌ Unsupported file format.")
-        loader = None
+        st.error("❌ Unsupported file format")
+        os.remove(temp_path)
+        st.stop()
 
-    if loader:
-        docs = loader.load()
-        resume_text = "\n".join([doc.page_content for doc in docs])
+    # Load document
+    docs = loader.load()
 
-        st.subheader("📑 Extracted Resume Text")
-        st.write(resume_text)
+    # Show output
+    st.success("✅ Resume loaded successfully!")
+    st.subheader("Extracted Content (Preview)")
+    st.write(docs[0].page_content[:1000])  # Preview first 1000 chars
 
-        prompt_template = """
-        You are an AI Resume Parser. Extract the following details clearly:
-
-        - Name
-        - Email
-        - Phone Number
-        - Skills
-        - Education
-        - Work Experience
-
-        Resume:
-        {resume_text}
-        """
-
-        prompt = Prompt.from_template(prompt_template)
-
-        response = llm.invoke(prompt.format(resume_text=resume_text))
-
-        st.subheader("✅ Parsed Resume Information")
-        st.write(response.content)
+    # Clean up (optional)
+    os.remove(temp_path)
